@@ -295,7 +295,23 @@ describe HTTParty do
       @additional_klass.default_options.should == { :base_uri => 'http://second.com', :default_params => { :two => 2 } }
     end
   end
-
+  
+  describe "two child classes from one parent" do
+    before(:each) do
+      @parent = Class.new
+      @parent.instance_eval { include HTTParty }
+      @child1 = Class.new(@parent)
+      @child2 = Class.new(@parent)
+      @child1.instance_eval { default_params({ :joe => "alive" })}
+      @child2.instance_eval { default_params({ :joe => "dead" })}
+    end
+    
+    it "should not muck with each others inherited attributes" do
+      @child1.default_options.should == { :default_params => {:joe => "alive"} }
+      @child2.default_options.should == { :default_params => {:joe => "dead"} }
+    end
+  end
+  
   describe "#get" do
     it "should be able to get html" do
       stub_http_response_with('google.html')
