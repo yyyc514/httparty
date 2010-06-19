@@ -1,10 +1,10 @@
 Given /a remote service that returns '(.*)'/ do |response_body|
-  @handler = new_mongrel_handler
+  @handler = BasicMongrelHandler.new
   Given "the response from the service has a body of '#{response_body}'"
 end
 
 Given /a remote service that returns a (\d+) status code/ do |code|
-  @handler = new_mongrel_handler
+  @handler = BasicMongrelHandler.new
   @handler.response_code = code
 end
 
@@ -13,8 +13,16 @@ Given /that service is accessed at the path '(.*)'/ do |path|
 end
 
 Given /^that service takes (\d+) seconds to generate a response$/ do |time|
-  preprocessor = lambda { sleep time.to_i }
-  @handler.preprocessor = preprocessor
+  @server_response_time = time.to_i
+  @handler.preprocessor = lambda { sleep time.to_i }
+end
+
+Given /^a remote deflate service$/ do
+  @handler = DeflateHandler.new
+end
+
+Given /^a remote gzip service$/ do
+  @handler = GzipHandler.new
 end
 
 Given /the response from the service has a Content-Type of '(.*)'/ do |content_type|
@@ -30,7 +38,11 @@ Given /the url '(.*)' redirects to '(.*)'/ do |redirection_url, target_url|
 end
 
 Given /that service is protected by Basic Authentication/ do
-  add_basic_authentication_to @handler
+  @handler.extend BasicAuthentication
+end
+
+Given /that service is protected by Digest Authentication/ do
+  @handler.extend DigestAuthentication
 end
 
 Given /that service requires the username '(.*)' with the password '(.*)'/ do |username, password|
@@ -49,4 +61,9 @@ end
 # server with a browser.  Runs until you kill it with Ctrl-c
 Given /I want to hit this in a browser/ do
   @server.acceptor.join
+end
+
+Then /I wait for the server to recover/ do
+  timeout = @request_options[:timeout] || 0
+  sleep @server_response_time - timeout
 end

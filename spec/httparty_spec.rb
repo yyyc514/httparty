@@ -12,6 +12,20 @@ describe HTTParty do
     @klass.instance_eval { include HTTParty }
   end
 
+  describe "AllowedFormats deprecated" do
+    before do
+      Kernel.stub(:warn)
+    end
+    it "warns with a deprecation message" do
+      Kernel.should_receive(:warn).with("Deprecated: Use HTTParty::Parser::SupportedFormats")
+      HTTParty::AllowedFormats
+    end
+
+    it "returns HTTPart::Parser::SupportedFormats" do
+      HTTParty::AllowedFormats.should == HTTParty::Parser::SupportedFormats
+    end
+  end
+
   describe "base uri" do
     before(:each) do
       @klass.base_uri('api.foo.com/v1')
@@ -189,6 +203,29 @@ describe HTTParty do
     end
   end
 
+  describe "default timeout" do
+    it "should default to nil" do
+      @klass.default_options[:timeout].should == nil
+    end
+
+    it "should support updating" do
+      @klass.default_timeout 10
+      @klass.default_options[:timeout].should == 10
+    end
+  end
+
+  describe "debug_output" do
+    it "stores the given stream as a default_option" do
+      @klass.debug_output $stdout
+      @klass.default_options[:debug_output].should == $stdout
+    end
+
+    it "stores the $stderr stream by default" do
+      @klass.debug_output
+      @klass.default_options[:debug_output].should == $stderr
+    end
+  end
+
   describe "basic http authentication" do
     it "should work" do
       @klass.basic_auth 'foobar', 'secret'
@@ -196,20 +233,45 @@ describe HTTParty do
     end
   end
 
+  describe "digest http authentication" do
+    it "should work" do
+      @klass.digest_auth 'foobar', 'secret'
+      @klass.default_options[:digest_auth].should == {:username => 'foobar', :password => 'secret'}
+    end
+  end
+
   describe "parser" do
-    before(:each) do
-      @parser = Proc.new{ |data| CustomParser.parse(data) }
-      @klass.parser @parser
+    let(:parser) do
+      Proc.new{ |data, format| CustomParser.parse(data) }
     end
 
     it "should set parser options" do
-      @klass.default_options[:parser].should == @parser
+      @klass.parser parser
+      @klass.default_options[:parser].should == parser
     end
 
     it "should be able parse response with custom parser" do
+      @klass.parser parser
       FakeWeb.register_uri(:get, 'http://twitter.com/statuses/public_timeline.xml', :body => 'tweets')
       custom_parsed_response = @klass.get('http://twitter.com/statuses/public_timeline.xml')
       custom_parsed_response[:sexy].should == true
+    end
+
+    it "raises UnsupportedFormat when the parser cannot handle the format" do
+      @klass.format :json
+      class MyParser < HTTParty::Parser
+        SupportedFormats = {}
+      end unless defined?(MyParser)
+      expect do
+        @klass.parser MyParser
+      end.to raise_error(HTTParty::UnsupportedFormat)
+    end
+
+    it 'does not validate format whe custom parser is a proc' do
+      expect do
+        @klass.format :json
+        @klass.parser lambda {|body, format|}
+      end.to_not raise_error(HTTParty::UnsupportedFormat)
     end
   end
 
@@ -243,35 +305,89 @@ describe HTTParty do
     it 'should only print each format once with an exception' do
       lambda do
         @klass.format :foobar
-      end.should raise_error(HTTParty::UnsupportedFormat, "Must be one of: html, json, plain, xml, yaml")
+      end.should raise_error(HTTParty::UnsupportedFormat, "':foobar' Must be one of: html, json, plain, xml, yaml")
     end
 
+    it 'sets the default parser' do
+      @klass.default_options[:parser].should be_nil
+      @klass.format :json
+      @klass.default_options[:parser].should == HTTParty::Parser
+    end
+
+    it 'does not reset parser to the default parser' do
+      my_parser = lambda {}
+      @klass.parser my_parser
+      @klass.format :json
+      @klass.parser.should == my_parser
+    end
+  end
+
+  describe "#no_follow" do
+    it "sets no_follow to false by default" do
+      @klass.no_follow
+      @klass.default_options[:no_follow].should be_false
+    end
+
+    it "sets the no_follow option to true" do
+      @klass.no_follow true
+      @klass.default_options[:no_follow].should be_true
+    end
+  end
+
+  describe "#maintain_method_across_redirects" do
+    it "sets maintain_method_across_redirects to true by default" do
+      @klass.maintain_method_across_redirects
+      @klass.default_options[:maintain_method_across_redirects].should be_true
+    end
+
+    it "sets the maintain_method_across_redirects option to false" do
+      @klass.maintain_method_across_redirects false
+      @klass.default_options[:maintain_method_across_redirects].should be_false
+    end
   end
 
   describe "with explicit override of automatic redirect handling" do
+    before do
+      @request = HTTParty::Request.new(Net::HTTP::Get, 'http://api.foo.com/v1', :format => :xml, :no_follow => true)
+      @redirect = stub_response 'first redirect', 302
+      @redirect['location'] = 'http://foo.com/bar'
+      HTTParty::Request.stub(:new => @request)
+    end
 
     it "should fail with redirected GET" do
       lambda do
-        @klass.get('/foo', :no_follow => true)
-      end.should raise_error(HTTParty::RedirectionTooDeep)
+        @error = @klass.get('/foo', :no_follow => true)
+      end.should raise_error(HTTParty::RedirectionTooDeep) {|e| e.response.body.should == 'first redirect'}
     end
 
     it "should fail with redirected POST" do
       lambda do
         @klass.post('/foo', :no_follow => true)
-      end.should raise_error(HTTParty::RedirectionTooDeep)
+      end.should raise_error(HTTParty::RedirectionTooDeep) {|e| e.response.body.should == 'first redirect'}
     end
 
     it "should fail with redirected DELETE" do
       lambda do
         @klass.delete('/foo', :no_follow => true)
-      end.should raise_error(HTTParty::RedirectionTooDeep)
+      end.should raise_error(HTTParty::RedirectionTooDeep) {|e| e.response.body.should == 'first redirect'}
     end
 
     it "should fail with redirected PUT" do
       lambda do
         @klass.put('/foo', :no_follow => true)
-      end.should raise_error(HTTParty::RedirectionTooDeep)
+      end.should raise_error(HTTParty::RedirectionTooDeep) {|e| e.response.body.should == 'first redirect'}
+    end
+
+    it "should fail with redirected HEAD" do
+      lambda do
+        @klass.head('/foo', :no_follow => true)
+      end.should raise_error(HTTParty::RedirectionTooDeep) {|e| e.response.body.should == 'first redirect'}
+    end
+
+    it "should fail with redirected OPTIONS" do
+      lambda do
+        @klass.options('/foo', :no_follow => true)
+      end.should raise_error(HTTParty::RedirectionTooDeep) {|e| e.response.body.should == 'first redirect'}
     end
   end
 
@@ -295,23 +411,28 @@ describe HTTParty do
       @additional_klass.default_options.should == { :base_uri => 'http://second.com', :default_params => { :two => 2 } }
     end
   end
-  
-  describe "two child classes from one parent" do
+
+  describe "two child classes inheriting from one parent" do
     before(:each) do
-      @parent = Class.new
-      @parent.instance_eval { include HTTParty }
+      @parent = Class.new do
+        include HTTParty
+      end
+
       @child1 = Class.new(@parent)
       @child2 = Class.new(@parent)
-      @child1.instance_eval { default_params({ :joe => "alive" })}
-      @child2.instance_eval { default_params({ :joe => "dead" })}
     end
-    
-    it "should not muck with each others inherited attributes" do
+
+    it "does not modify each others inherited attributes" do
+      @child1.default_params :joe => "alive"
+      @child2.default_params :joe => "dead"
+
       @child1.default_options.should == { :default_params => {:joe => "alive"} }
       @child2.default_options.should == { :default_params => {:joe => "dead"} }
+
+      @parent.default_options.should == { }
     end
   end
-  
+
   describe "#get" do
     it "should be able to get html" do
       stub_http_response_with('google.html')
@@ -361,7 +482,7 @@ describe HTTParty do
     it "should parse empty response fine" do
       stub_http_response_with('empty.xml')
       result = HTTParty.get('http://foobar.com')
-      result.should == nil
+      result.should be_nil
     end
 
     it "should accept http URIs" do

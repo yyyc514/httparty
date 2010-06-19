@@ -1,10 +1,17 @@
 require 'mongrel'
-require 'activesupport'
+require 'active_support'
 require 'lib/httparty'
 require 'spec/expectations'
 
 Before do
-  port = ENV["HTTPARTY_PORT"] || 31981
+  def new_port
+    server = TCPServer.new('0.0.0.0', nil)
+    port = server.addr[1]
+  ensure
+    server.close
+  end
+
+  port = ENV["HTTPARTY_PORT"] || new_port
   @host_and_port = "0.0.0.0:#{port}"
   @server = Mongrel::HttpServer.new("0.0.0.0", port)
   @server.run

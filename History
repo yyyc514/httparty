@@ -1,16 +1,66 @@
-== 0.4.6 master
+== 0.6.0 2010-06-13
+* major enhancements
+  * Digest Auth (bartiaco, sbecker, gilles, and aaronrussell)
+  * Maintain HTTP method across redirects (bartiaco and sbecker)
+  * HTTParty::Response#response returns the Net::HTTPResponse object
+  * HTTParty::Response#headers returns a HTTParty::Response::Headers object
+    which quacks like a Hash + Net::HTTPHeader. The #headers method continues
+    to be backwards-compatible with the old Hash return value but may become
+    deprecated in the future.
+
 * minor enhancements
-  * Register a customized response parser
+  * Update crack requirement to version 0.1.7
+    You may still get a warning because Crack's version constant is out of date
+  * Timeout option can be set for all requests using HTTParty.default_timeout (taazza)
+  * Closed #38 "headers hash should downcase keys so canonical header name can be used"
+  * Closed #40 "Gzip response" wherein gziped and deflated responses are
+    automatically inflated. (carsonmcdonald)
+
+== 0.5.2 2010-01-31
+* minor enhancements
+  * Update crack requirement to version 0.1.6
+
+== 0.5.1 2010-01-30
+* bug fixes
+  * Handle 304 response correctly by returning the HTTParty::Response object instead of redirecting (seth and hellvinz)
+  * Only redirect 300 responses if the header contains a Location
+  * Don't append empty query strings to the uri. Closes #31
+  * When no_follow is enabled, only raise the RedirectionTooDeep exception when a response tries redirecting. Closes #28
+
+* major enhancements
+  * Removed rubygems dependency. I suggest adding rubygems to RUBYOPT if this causes problems for you.
+    $ export RUBYOPT='rubygems'
+  * HTTParty#debug_output prints debugging information for the current request (iwarshak)
+  * HTTParty#no_follow now available as a class-level option. Sets whether or not to follow redirects.
+
+* minor enhancements
+  * HTTParty::VERSION now available
+  * Update crack requirement to version 0.1.5
+
+== 0.5.0 2009-12-07
+* bug fixes
+  * inheritable attributes no longer mutable by subclasses (yyyc514)
+  * namespace BasicObject within HTTParty to avoid class name collisions (eric)
+
+* major enhancements
+  * Custom Parsers via class or proc
+  * Deprecation warning on HTTParty::AllowedFormats
+    moved to HTTParty::Parser::SupportedFormats
+
+* minor enhancements
   * Curl inspired output when using the binary in verbose mode (alexvollmer)
   * raise UnsupportedURIScheme when scheme is not HTTP or HTTPS (djspinmonkey)
   * Allow SSL for ports other than 443 when scheme is HTTPS (stefankroes)
   * Accept PEM certificates via HTTParty#pem (chrislo)
+  * Support HEAD and OPTION verbs (grempe)
+  * Verify SSL certificates when providing a PEM file (collectiveidea/danielmorrison)
 
 == 0.4.5 2009-09-12
 * bug fixes
   * Fixed class-level headers overwritten by cookie management code. Closes #19
   * Fixed "superclass mismatch for class BlankSlate" error. Closes #20
   * Fixed reading files as post data from the command line (vesan)
+
 * minor enhancements
   * Timeout option added; will raise a Timeout::Error after the timeout has elapsed (attack). Closes #17
     HTTParty.get "http://github.com", :timeout => 1

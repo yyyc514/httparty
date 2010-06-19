@@ -1,29 +1,32 @@
 require 'pathname'
 require 'net/http'
 require 'net/https'
-require 'rubygems'
-gem 'crack', '>= 0.1.1'
+require 'uri'
+require 'zlib'
 require 'crack'
 
 dir = Pathname(__FILE__).dirname.expand_path
 
 require dir + 'httparty/module_inheritable_attributes'
 require dir + 'httparty/cookie_hash'
+require dir + 'httparty/net_digest_auth'
 
 module HTTParty
+  VERSION = "0.6.0".freeze
+  CRACK_DEPENDENCY = "0.1.7".freeze
 
-  AllowedFormats = {
-    'text/xml'               => :xml,
-    'application/xml'        => :xml,
-    'application/json'       => :json,
-    'text/json'              => :json,
-    'application/javascript' => :json,
-    'text/javascript'        => :json,
-    'text/html'              => :html,
-    'application/x-yaml'     => :yaml,
-    'text/yaml'              => :yaml,
-    'text/plain'             => :plain
-  } unless defined?(AllowedFormats)
+  module AllowedFormatsDeprecation
+    def const_missing(const)
+      if const.to_s =~ /AllowedFormats$/
+        Kernel.warn("Deprecated: Use HTTParty::Parser::SupportedFormats")
+        HTTParty::Parser::SupportedFormats
+      else
+        super
+      end
+    end
+  end
+
+  extend AllowedFormatsDeprecation
 
   def self.included(base)
     base.extend ClassMethods
@@ -35,6 +38,8 @@ module HTTParty
   end
 
   module ClassMethods
+    extend AllowedFormatsDeprecation
+
     # Allows setting http proxy information to be used
     #
     #   class Foo
@@ -68,6 +73,16 @@ module HTTParty
       default_options[:basic_auth] = {:username => u, :password => p}
     end
 
+    # Allows setting digest authentication username and password.
+    #
+    #   class Foo
+    #     include HTTParty
+    #     digest_auth 'username', 'password'
+    #   end
+    def digest_auth(u, p)
+      default_options[:digest_auth] = {:username => u, :password => p}
+    end
+
     # Allows setting default parameters to be appended to each request.
     # Great for api keys and such.
     #
@@ -81,7 +96,30 @@ module HTTParty
       default_options[:default_params].merge!(h)
     end
 
-    # Allows setting a base uri to be used for each request.
+    # Allows setting a default timeout for all HTTP calls
+    # Timeout is specified in seconds.
+    #
+    #   class Foo
+    #     include HTTParty
+    #     default_timeout 10
+    #   end
+    def default_timeout(t)
+      raise ArgumentError, 'Timeout must be an integer' unless t && t.is_a?(Integer)
+      default_options[:timeout] = t
+    end
+
+    # Set an output stream for debugging, defaults to $stderr.
+    # The output stream is passed on to Net::HTTP#set_debug_output.
+    #
+    #   class Foo
+    #     include HTTParty
+    #     debug_output $stderr
+    #   end
+    def debug_output(stream = $stderr)
+      default_options[:debug_output] = stream
+    end
+
+    # Allows setting HTTP headers to be used for each request.
     #
     #   class Foo
     #     include HTTParty
@@ -105,9 +143,52 @@ module HTTParty
     #     include HTTParty
     #     format :json
     #   end
-    def format(f)
-      raise UnsupportedFormat, "Must be one of: #{AllowedFormats.values.map { |v| v.to_s }.uniq.sort.join(', ')}" unless AllowedFormats.value?(f)
-      default_options[:format] = f
+    def format(f = nil)
+      if f.nil?
+        default_options[:format]
+      else
+        parser(Parser) if parser.nil?
+        default_options[:format] = f
+        validate_format
+      end
+    end
+
+    # Declare whether or not to follow redirects.  When true, an
+    # {HTTParty::RedirectionTooDeep} error will raise upon encountering a
+    # redirect. You can then gain access to the response object via
+    # HTTParty::RedirectionTooDeep#response.
+    #
+    # @see HTTParty::ResponseError#response
+    #
+    # @example
+    #   class Foo
+    #     include HTTParty
+    #     base_uri 'http://google.com'
+    #     no_follow true
+    #   end
+    #
+    #   begin
+    #     Foo.get('/')
+    #   rescue HTTParty::RedirectionTooDeep => e
+    #     puts e.response.body
+    #   end
+    def no_follow(value = false)
+      default_options[:no_follow] = value
+    end
+
+    # Declare that you wish to maintain the chosen HTTP method across redirects.
+    # The default behavior is to follow redirects via the GET method.
+    # If you wish to maintain the original method, you can set this option to true.
+    #
+    # @example
+    #   class Foo
+    #     include HTTParty
+    #     base_uri 'http://google.com'
+    #     maintain_method_across_redirects true
+    #   end
+
+    def maintain_method_across_redirects(value = true)
+      default_options[:maintain_method_across_redirects] = value
     end
 
     # Allows setting a PEM file to be used
@@ -126,8 +207,13 @@ module HTTParty
     #     include HTTParty
     #     parser Proc.new {|data| ...}
     #   end
-    def parser(customer_parser)
-      default_options[:parser] = customer_parser
+    def parser(custom_parser = nil)
+      if custom_parser.nil?
+        default_options[:parser]
+      else
+        default_options[:parser] = custom_parser
+        validate_format
+      end
     end
 
     # Allows making a get request to a url.
@@ -162,12 +248,24 @@ module HTTParty
       perform_request Net::HTTP::Post, path, options
     end
 
+    # Perform a PUT request to a path
     def put(path, options={})
       perform_request Net::HTTP::Put, path, options
     end
 
+    # Perform a DELETE request to a path
     def delete(path, options={})
       perform_request Net::HTTP::Delete, path, options
+    end
+
+    # Perform a HEAD request to a path
+    def head(path, options={})
+      perform_request Net::HTTP::Head, path, options
+    end
+
+    # Perform an OPTIONS request to a path
+    def options(path, options={})
+      perform_request Net::HTTP::Options, path, options
     end
 
     def default_options #:nodoc:
@@ -175,6 +273,7 @@ module HTTParty
     end
 
     private
+
       def perform_request(http_method, path, options) #:nodoc:
         options = default_options.dup.merge(options)
         process_cookies(options)
@@ -185,6 +284,12 @@ module HTTParty
         return unless options[:cookies] || default_cookies.any?
         options[:headers] ||= headers.dup
         options[:headers]["cookie"] = cookies.merge(options.delete(:cookies) || {}).to_cookie_string
+      end
+
+      def validate_format
+        if format && parser.respond_to?(:supports_format?) && !parser.supports_format?(format)
+          raise UnsupportedFormat, "'#{format.inspect}' Must be one of: #{parser.supported_formats.map{|f| f.to_s}.sort.join(', ')}"
+        end
       end
   end
 
@@ -218,9 +323,23 @@ module HTTParty
   def self.delete(*args)
     Basement.delete(*args)
   end
+
+  def self.head(*args)
+    Basement.head(*args)
+  end
+
+  def self.options(*args)
+    Basement.options(*args)
+  end
+
 end
 
 require dir + 'httparty/core_extensions'
 require dir + 'httparty/exceptions'
+require dir + 'httparty/parser'
 require dir + 'httparty/request'
 require dir + 'httparty/response'
+
+if Crack::VERSION != HTTParty::CRACK_DEPENDENCY
+  warn "warning: HTTParty depends on version #{HTTParty::CRACK_DEPENDENCY} of crack, not #{Crack::VERSION}."
+end

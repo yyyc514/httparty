@@ -1,27 +1,79 @@
 require File.expand_path(File.join(File.dirname(__FILE__), '..', 'spec_helper'))
 
 describe HTTParty::Request do
-  def stub_response(body, code = 200)
-    unless @http
-      @http = Net::HTTP.new('localhost', 80)
-      @request.stub!(:http).and_return(@http)
-      @request.stub!(:uri).and_return(URI.parse("http://foo.com/foobar"))
-    end
-
-    response = Net::HTTPResponse::CODE_TO_OBJ[code.to_s].new("1.1", code, body)
-    response.stub!(:body).and_return(body)
-
-    @http.stub!(:request).and_return(response)
-    response
-  end
-
   before do
     @request = HTTParty::Request.new(Net::HTTP::Get, 'http://api.foo.com/v1', :format => :xml)
   end
 
+  describe "initialization" do
+    it "sets parser to HTTParty::Parser" do
+      request = HTTParty::Request.new(Net::HTTP::Get, 'http://google.com')
+      request.parser.should == HTTParty::Parser
+    end
+
+    it "sets parser to the optional parser" do
+      my_parser = lambda {}
+      request = HTTParty::Request.new(Net::HTTP::Get, 'http://google.com', :parser => my_parser)
+      request.parser.should == my_parser
+    end
+  end
+
   describe "#format" do
-    it "should return the correct parsing format" do
-      @request.format.should == :xml
+    context "request yet to be made" do
+      it "returns format option" do
+        request = HTTParty::Request.new 'get', '/', :format => :xml
+        request.format.should == :xml
+      end
+
+      it "returns nil format" do
+        request = HTTParty::Request.new 'get', '/'
+        request.format.should be_nil
+      end
+    end
+
+    context "request has been made" do
+      it "returns format option" do
+        request = HTTParty::Request.new 'get', '/', :format => :xml
+        request.last_response = stub
+        request.format.should == :xml
+      end
+
+      it "returns the content-type from the last response when the option is not set" do
+        request = HTTParty::Request.new 'get', '/'
+        response = stub
+        response.should_receive(:[]).with('content-type').and_return('text/json')
+        request.last_response = response
+        request.format.should == :json
+      end
+    end
+
+  end
+
+  context "options" do
+    it "should use basic auth when configured" do
+      @request.options[:basic_auth] = {:username => 'foobar', :password => 'secret'}
+      @request.send(:setup_raw_request)
+      @request.instance_variable_get(:@raw_request)['authorization'].should_not be_nil
+    end
+
+    it "should use digest auth when configured" do
+      FakeWeb.register_uri(:head, "http://api.foo.com/v1",
+        :www_authenticate => 'Digest realm="Log Viewer", qop="auth", nonce="2CA0EC6B0E126C4800E56BA0C0003D3C", opaque="5ccc069c403ebaf9f0171e9517f40e41", stale=false')
+
+      @request.options[:digest_auth] = {:username => 'foobar', :password => 'secret'}
+      @request.send(:setup_raw_request)
+
+      raw_request = @request.instance_variable_get(:@raw_request)
+      raw_request.instance_variable_get(:@header)['Authorization'].should_not be_nil
+    end
+  end
+
+  describe "#uri" do
+    context "query strings" do
+      it "does not add an empty query string when default_params are blank" do
+        @request.options[:default_params] = {}
+        @request.uri.query.should be_nil
+      end
     end
   end
 
@@ -52,36 +104,71 @@ describe HTTParty::Request do
         OpenSSL::PKey::RSA.stub(:new)
       end
 
-      it "should use a PEM certificate when provided" do
-        @request.stub!(:uri).and_return(URI.parse("https://google.com"))
-        pem = :pem_contents
-        cert = mock("OpenSSL::X509::Certificate")
-        key =  mock("OpenSSL::PKey::RSA")
-        OpenSSL::X509::Certificate.should_receive(:new).with(pem).and_return(cert)
-        OpenSSL::PKey::RSA.should_receive(:new).with(pem).and_return(key)
+      context "when scheme is https" do
+        before do
+          @request.stub!(:uri).and_return(URI.parse("https://google.com"))
+          pem = :pem_contents
+          @cert = mock("OpenSSL::X509::Certificate")
+          @key =  mock("OpenSSL::PKey::RSA")
+          OpenSSL::X509::Certificate.should_receive(:new).with(pem).and_return(@cert)
+          OpenSSL::PKey::RSA.should_receive(:new).with(pem).and_return(@key)
 
-        @request.options[:pem] = pem
-        pem_http = @request.send(:http)
-        pem_http.cert.should == cert
-        pem_http.key.should == key
+          @request.options[:pem] = pem
+          @pem_http = @request.send(:http)
+        end
+
+        it "should use a PEM certificate when provided" do
+          @pem_http.cert.should == @cert
+          @pem_http.key.should == @key
+        end
+
+        it "should verify the certificate when provided" do
+          @pem_http = @request.send(:http)
+          @pem_http.verify_mode.should == OpenSSL::SSL::VERIFY_PEER
+        end
       end
 
-      it "does not assign a PEM if scheme is not https" do
-        http = Net::HTTP.new('google.com')
-        http.should_not_receive(:cert=)
-        http.should_not_receive(:key=)
-        Net::HTTP.stub(:new => http)
+      context "when scheme is not https" do
+        it "does not assign a PEM" do
+          http = Net::HTTP.new('google.com')
+          http.should_not_receive(:cert=)
+          http.should_not_receive(:key=)
+          Net::HTTP.stub(:new => http)
 
-        request = HTTParty::Request.new(Net::HTTP::Get, 'http://google.com')
-        request.options[:pem] = :pem_contents
-        request.send(:http)
+          request = HTTParty::Request.new(Net::HTTP::Get, 'http://google.com')
+          request.options[:pem] = :pem_contents
+          request.send(:http)
+        end
+
+        it "should not verify a certificate if scheme is not https" do
+          http = Net::HTTP.new('google.com')
+          Net::HTTP.stub(:new => http)
+
+          request = HTTParty::Request.new(Net::HTTP::Get, 'http://google.com')
+          request.options[:pem] = :pem_contents
+          http = request.send(:http)
+          http.verify_mode.should == OpenSSL::SSL::VERIFY_NONE
+        end
       end
-    end
 
-    it "should use basic auth when configured" do
-      @request.options[:basic_auth] = {:username => 'foobar', :password => 'secret'}
-      @request.send(:setup_raw_request)
-      @request.instance_variable_get(:@raw_request)['authorization'].should_not be_nil
+      context "debugging" do
+        before do
+          @http = Net::HTTP.new('google.com')
+          Net::HTTP.stub(:new => @http)
+          @request = HTTParty::Request.new(Net::HTTP::Get, 'http://google.com')
+        end
+
+        it "calls #set_debug_output when the option is provided" do
+          @request.options[:debug_output] = $stderr
+          @http.should_receive(:set_debug_output).with($stderr)
+          @request.send(:http)
+        end
+
+        it "does not set_debug_output when the option is not provided" do
+          @http.should_not_receive(:set_debug_output)
+          @request.send(:http)
+        end
+      end
     end
 
     context "when setting timeout" do
@@ -139,6 +226,15 @@ describe HTTParty::Request do
         @request.send(:format_from_mimetype, ct).should == :json
       end
     end
+
+    it "returns nil for an unrecognized mimetype" do
+      @request.send(:format_from_mimetype, "application/atom+xml").should be_nil
+    end
+
+    it "returns nil when using a default parser" do
+      @request.options[:parser] = lambda {}
+      @request.send(:format_from_mimetype, "text/json").should be_nil
+    end
   end
 
   describe 'parsing responses' do
@@ -169,6 +265,29 @@ describe HTTParty::Request do
     end
 
     describe 'with non-200 responses' do
+      context "3xx responses" do
+        it 'returns a valid object for 304 not modified' do
+          stub_response '', 304
+          resp = @request.perform
+          resp.code.should == 304
+          resp.body.should == ''
+          resp.should be_nil
+        end
+
+        it "redirects if a 300 contains a location header" do
+          redirect = stub_response '', 300
+          redirect['location'] = 'http://foo.com/foo'
+          ok = stub_response('<hash><foo>bar</foo></hash>', 200)
+          @http.stub!(:request).and_return(redirect, ok)
+          @request.perform.should == {"hash" => {"foo" => "bar"}}
+        end
+
+        it "returns the Net::HTTP response if the 300 does not contain a location header" do
+          net_response = stub_response '', 300
+          @request.perform.should be_kind_of(Net::HTTPMultipleChoice)
+        end
+      end
+
       it 'should return a valid object for 4xx response' do
         stub_response '<foo><bar>yes</bar></foo>', 401
         resp = @request.perform
@@ -188,10 +307,12 @@ describe HTTParty::Request do
   end
 
   it "should not attempt to parse empty responses" do
-    stub_response "", 204
+    [204, 304].each do |code|
+      stub_response "", code
 
-    @request.options[:format] = :xml
-    @request.perform.should be_nil
+      @request.options[:format] = :xml
+      @request.perform.should be_nil
+    end
   end
 
   it "should not fail for missing mime type" do
@@ -232,6 +353,16 @@ describe HTTParty::Request do
         @request.perform.should == {"hash" => {"foo" => "bar"}}
       end
 
+      it "should be handled by HEAD transparently" do
+        @request.http_method = Net::HTTP::Head
+        @request.perform.should == {"hash" => {"foo" => "bar"}}
+      end
+
+      it "should be handled by OPTIONS transparently" do
+        @request.http_method = Net::HTTP::Options
+        @request.perform.should == {"hash" => {"foo" => "bar"}}
+      end
+
       it "should keep track of cookies between redirects" do
         @redirect['Set-Cookie'] = 'foo=bar; name=value; HTTPOnly'
         @request.perform
@@ -258,6 +389,13 @@ describe HTTParty::Request do
         @request.perform.should == {"hash" => {"foo" => "bar"}}
         @request.http_method.should == Net::HTTP::Get
       end
+
+      it 'should not make resulting request a get request if options[:maintain_method_across_redirects] is true' do
+        @request.options[:maintain_method_across_redirects] = true
+        @request.http_method = Net::HTTP::Delete
+        @request.perform.should == {"hash" => {"foo" => "bar"}}
+        @request.http_method.should == Net::HTTP::Delete
+      end
     end
 
     describe "infinitely" do
@@ -270,12 +408,33 @@ describe HTTParty::Request do
       end
     end
   end
-end
 
-describe HTTParty::Request, "with POST http method" do
-  it "should raise argument error if query is not a hash" do
-    lambda {
-      HTTParty::Request.new(Net::HTTP::Post, 'http://api.foo.com/v1', :format => :xml, :query => 'astring').perform
-    }.should raise_error(ArgumentError)
+  context "with POST http method" do
+    it "should raise argument error if query is not a hash" do
+      lambda {
+        HTTParty::Request.new(Net::HTTP::Post, 'http://api.foo.com/v1', :format => :xml, :query => 'astring').perform
+      }.should raise_error(ArgumentError)
+    end
+  end
+
+  describe "argument validation" do
+    it "should raise argument error if basic_auth and digest_auth are both present" do
+      lambda {
+        HTTParty::Request.new(Net::HTTP::Post, 'http://api.foo.com/v1', :basic_auth => {}, :digest_auth => {}).perform
+      }.should raise_error(ArgumentError, "only one authentication method, :basic_auth or :digest_auth may be used at a time")
+    end
+
+    it "should raise argument error if basic_auth is not a hash" do
+      lambda {
+        HTTParty::Request.new(Net::HTTP::Post, 'http://api.foo.com/v1', :basic_auth => ["foo", "bar"]).perform
+      }.should raise_error(ArgumentError, ":basic_auth must be a hash")
+    end
+
+    it "should raise argument error if digest_auth is not a hash" do
+      lambda {
+        HTTParty::Request.new(Net::HTTP::Post, 'http://api.foo.com/v1', :digest_auth => ["foo", "bar"]).perform
+      }.should raise_error(ArgumentError, ":digest_auth must be a hash")
+    end
   end
 end
+
