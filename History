@@ -1,3 +1,20 @@
+== 0.7.0 (master)
+* minor enhancements
+  * Added query methods for HTTP status codes, i.e. response.success?
+    response.created? (thanks citizenparker)
+  * Added support for ssl_ca_file and ssl_ca_path (dlitz)
+* bug fixes
+  * Fixed superclass mismatch exception while running tests
+    (thanks dlitz http://github.com/dlitz/httparty/commit/48224f0615b32133afcff4718ad426df7a4b401b)
+
+== 0.6.1 2010-07-07
+* minor enhancements
+  * updated to crack 0.1.8
+* bug fixes
+  * subclasses always merge into the parent's default_options and
+  default_cookies (l4rk).
+  * subclasses play nicely with grand parents. gh-49
+
 == 0.6.0 2010-06-13
 * major enhancements
   * Digest Auth (bartiaco, sbecker, gilles, and aaronrussell)

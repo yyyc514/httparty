@@ -1,11 +1,5 @@
 require File.expand_path(File.join(File.dirname(__FILE__), 'spec_helper'))
 
-class CustomParser
-  def self.parse(body)
-    return {:sexy => true}
-  end
-end
-
 describe HTTParty do
   before(:each) do
     @klass = Class.new
@@ -241,6 +235,12 @@ describe HTTParty do
   end
 
   describe "parser" do
+    class CustomParser
+      def self.parse(body)
+        return {:sexy => true}
+      end
+    end
+
     let(:parser) do
       Proc.new{ |data, format| CustomParser.parse(data) }
     end
@@ -416,6 +416,9 @@ describe HTTParty do
     before(:each) do
       @parent = Class.new do
         include HTTParty
+        def self.name
+          "Parent"
+        end
       end
 
       @child1 = Class.new(@parent)
@@ -430,6 +433,59 @@ describe HTTParty do
       @child2.default_options.should == { :default_params => {:joe => "dead"} }
 
       @parent.default_options.should == { }
+    end
+
+    it "inherits default_options from the superclass" do
+      @parent.basic_auth 'user', 'password'
+      @child1.default_options.should == {:basic_auth => {:username => 'user', :password => 'password'}}
+      @child1.basic_auth 'u', 'p' # modifying child1 has no effect on child2
+      @child2.default_options.should == {:basic_auth => {:username => 'user', :password => 'password'}}
+    end
+
+    it "doesn't modify the parent's default options" do
+      @parent.basic_auth 'user', 'password'
+
+      @child1.basic_auth 'u', 'p'
+      @child1.default_options.should == {:basic_auth => {:username => 'u', :password => 'p'}}
+
+      @child1.basic_auth 'email', 'token'
+      @child1.default_options.should == {:basic_auth => {:username => 'email', :password => 'token'}}
+
+      @parent.default_options.should == {:basic_auth => {:username => 'user', :password => 'password'}}
+    end
+
+    it "inherits default_cookies from the parent class" do
+      @parent.cookies 'type' => 'chocolate_chip'
+      @child1.default_cookies.should == {"type" => "chocolate_chip"}
+      @child1.cookies 'type' => 'snickerdoodle'
+      @child1.default_cookies.should == {"type" => "snickerdoodle"}
+      @child2.default_cookies.should == {"type" => "chocolate_chip"}
+    end
+
+    it "doesn't modify the parent's default cookies" do
+      @parent.cookies 'type' => 'chocolate_chip'
+
+      @child1.cookies 'type' => 'snickerdoodle'
+      @child1.default_cookies.should == {"type" => "snickerdoodle"}
+
+      @parent.default_cookies.should == {"type" => "chocolate_chip"}
+    end
+  end
+
+  describe "grand parent with inherited callback" do
+    before do
+      @grand_parent = Class.new do
+        def self.inherited(subclass)
+          subclass.instance_variable_set(:@grand_parent, true)
+        end
+      end
+      @parent = Class.new(@grand_parent) do
+        include HTTParty
+      end
+    end
+    it "continues running the #inherited on the parent" do
+      child = Class.new(@parent)
+      child.instance_variable_get(:@grand_parent).should be_true
     end
   end
 
